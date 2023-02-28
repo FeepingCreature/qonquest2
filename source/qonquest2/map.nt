@@ -1,0 +1,142 @@
+/// Contains code handling the map
+module qonquest2.map;
+
+macro import std.macro.listcomprehension;
+macro import std.macro.cimport;
+import c_header("SDL2/SDL_image.h");
+
+import std.json;
+import std.file;
+import qonquest2.base;
+import qonquest2.display : Color3f;
+import qonquest2.sdl;
+import qonquest2.util;
+
+private int brightness(Color c) {
+    return (c.r + c.g + c.b)/3;
+}
+
+private alias COLOR_SWAP_THRESHOLD = 128; /// Which brightness to start putting the inverse color instead of the light color
+private alias LIGHT_TEXT_COLOR = (Color3f(1, 1, 1)); /// Light text color
+
+/// Represents a country
+class CountryImpl : Country {
+    this(this.name, this.color) {
+        this.deployableTroops = 2;
+    }
+
+    override Province[] ownedProvinces(GameMap map) {
+        mut Province[] ret;
+        for (p in map.provinces)
+            if(p.owner is this)
+                ret ~= p;
+        return ret;
+    }
+
+    override string hexCode() {
+        return "`"~Color3f(color).toHexString;
+    }
+
+    Color3f textColor() {
+        return Color3f(color).inverse if color.brightness() > COLOR_SWAP_THRESHOLD else LIGHT_TEXT_COLOR;
+    }
+}
+
+class ProvinceImpl : Province {
+    this(this.name, this.color, this.center, this.owner) { }
+
+    string toString() {
+        return name;
+    }
+
+    override string hexCode() {
+        return "`"~Color3f(color).toHexString;
+    }
+
+    Color3f textColor() {
+        return Color3f(color).inverse if color.brightness() > COLOR_SWAP_THRESHOLD else LIGHT_TEXT_COLOR;
+    }
+}
+
+/// Converts a jsonvalue into a Color
+private Color toColor(JSONValue v) {
+    auto arr = v.array;
+    return Color(cast(ubyte)(arr[0].integer), cast(ubyte)(arr[1].integer), cast(ubyte)(arr[2].integer));
+}
+
+/// Converts a JSONValue into a Point
+private Point toPoint(JSONValue v) {
+    auto arr = v.array;
+    return Point(arr[0].integer, arr[1].integer);
+}
+
+/// Loads the map (including countries & provinces)
+GameMap loadMap() {
+    auto map = new GameMap;
+    map.countries.clear;
+    map.provinces = [];
+    auto mapJSON  = JSONValue.loadFile("data/map.json");
+    // load countries
+    for (country in mapJSON.get("countries").array) {
+        string name = country.get("name").str;
+        if(map.countries.has(name)) {
+            die("Duplicate country "~name~".");
+        }
+        auto col = country.get("color").toColor();
+        map.countries[name] = new CountryImpl(name, col);
+    }
+    // load provinces
+    mut Province[Color] provinceColors; // temporary lookup table to make processing map more efficient
+    for (province in mapJSON.get("provinces").array) {
+        auto col = province.get("color").toColor();
+        if(provinceColors.has(col))
+            die("Duplicate province with color "~province.get("color").str~".");
+        auto owner = province.get("owner").str;
+        string name = province.get("name").str;
+        if(province.has("gen-country") && province.get("gen-country").boolean)
+            map.countries[name] = new CountryImpl(name, col);
+        if(!map.countries.has(owner))
+            die("Unknown country "~owner~".");
+        auto prov = new ProvinceImpl(name, col, province.get("center").toPoint, map.countries[owner]);
+        if(province.has("neighbors"))
+            for (i_ in province.get("neighbors").array) {
+                string i = i_.str;
+                Province other = [first p for p in map.provinces where p.name == i];
+                prov.neighbors ~= other;
+                other.neighbors ~= prov;
+                map.straits ~= (prov.center, other.center);
+            }
+        map.provinces ~= prov;
+        provinceColors[col] = prov;
+    }
+    auto mapImage = IMG_Load("data/map.png");
+    // loop through image
+    for (i in 0 .. mapImage.w) {
+        for (j in 0 .. mapImage.h) {
+            // if this pixel belongs to a province, add it
+            int bpp = mapImage.format.BytesPerPixel;
+            Color getPixel(int x, int y) {
+                auto pixel = &(cast(ubyte*) mapImage.pixels)[y * mapImage.pitch + x * bpp];
+                return Color(pixel[0], pixel[1], pixel[2]);
+            }
+            Color c = getPixel(i, j);
+            if(!provinceColors.has(c))
+                continue;
+            auto p = provinceColors[c];
+            p.pixels ~= Point(i, j);
+            // add neighbors
+            if(i == 0 || j == 0)
+                continue;
+            for (col in [getPixel(i-1, j), getPixel(i, j-1), getPixel(i-1, j-1)]) {
+                if(!provinceColors.has(col) || col == c)
+                    continue;
+                auto other = provinceColors[col];
+                if([any neighbor == other for neighbor in p.neighbors])
+                    continue;
+                p.neighbors ~= other;
+                other.neighbors ~= p;
+            }
+        }
+    }
+    return map;
+}

@@ -1,0 +1,152 @@
+module qonquest2.base;
+
+import qonquest2.util;
+
+alias WIDTH = 1200;
+alias HEIGHT = 800;
+
+/// Represents a player
+class Player {
+    Country country;  /// Country the player has chosen
+    PlayerAction[] actions; /// Actions the player has done
+    bool hasCapturedProvince; /// Whether the player has captured a province yet
+
+    this(this.country) { }
+}
+
+abstract class Game {
+    State state; /// The current state
+    GameMap map;
+    MapMode mapMode;
+    Province[] availableProvinces; /// Available provinces in doing actions
+    int currentTurn; /// The current turn
+    Window[] windows;
+
+    bool hideStraits;
+    bool shiftPressed; /// Whether or not shift is pressed
+
+    Player[] players;     /// Players in the game
+    size_t currentPlayer; /// Current player
+
+    int lastX, lastY;
+
+    /// gets the current player
+    Player player() {
+        if (!players.empty)
+            return players[currentPlayer];
+        die("no players!");
+    }
+    nullable Player playerOrNull() {
+        if (players.empty) return null;
+        return players[currentPlayer];
+    }
+}
+
+interface Action {
+    void call();
+}
+
+class DelegateAction : Action {
+    void delegate() dg;
+    this(this.dg) {}
+    override void call() { this.dg(); }
+}
+
+/// Controls the state of the game
+enum State {
+    MAIN_MENU, GAME
+}
+
+/// Controls the current map mode
+enum MapMode {
+    // normal map modes
+    PROVINCE, COUNTRY,
+    // selection map modes
+    SELECT_COUNTRY, MOVE_TROOPS_1, MOVE_TROOPS_2, DEPLOY_TROOPS,
+    // other map modes
+    WON, LOST
+}
+
+class GameMap {
+    Country[string] countries; /// All countries in the game
+    Province[] provinces;      /// All provinces in the game
+    (Point, Point)[] straits;
+    this() { }
+}
+
+/// Represents a single action that can be done
+interface PlayerAction {
+    void commit(Game game);   /// Does the action
+}
+
+abstract class Country {
+    string name; /// Name of this country
+    Color color; /// Color of this country
+    int deployableTroops; /// Number of troops can currently be deployed
+    abstract string hexCode();
+    abstract Province[] ownedProvinces(GameMap map);
+}
+
+abstract class MovementAction : PlayerAction {
+    Province source; /// Source province
+    Province dest;   /// Destination province
+    int amt;         /// Amount of troops to move
+}
+
+abstract class DeploymentAction : PlayerAction {
+    Province province;
+    int amt;
+}
+
+/// Represents a province
+abstract class Province {
+    Color color;          /// Color of this province
+    string name;          /// Name of this province
+    Point[] pixels;       /// Pixels of this province
+    Country owner;        /// Owner of this province
+    Point center;         /// Center of this province
+    Province[] neighbors; /// Neighbors of this province
+    int troops;           /// How many troops are in this province
+    string hexCode() {}
+}
+
+/// Returns the amount of troops a province has after movement & deployment
+int effectiveTroops(Province p, Player player) {
+    mut int amt = p.troops;
+    for (a in player.actions) {
+        if(auto ma = a.instanceOf(MovementAction)) {
+            if(ma.source is p)
+                amt -= ma.amt;
+        } else if(auto da = a.instanceOf(DeploymentAction)) {
+            if(da.province is p)
+                amt += da.amt;
+        }
+    }
+    return amt;
+}
+
+abstract class Window {
+    int width;           /// Width of this window
+    int height;          /// Height of this window
+    int x;               /// X position of this window
+    int y;               /// Y position of this window
+    bool close;  /// Tells the program to close this window
+    bool visible; /// Whether this window is visible or not
+    abstract void render(nullable Player player);
+    abstract bool click(Game game, int cx, int cy, MouseButton button);
+    abstract bool inTitleBar(int a, int b);
+}
+
+enum MouseButton {
+    none,
+    left,
+    right,
+}
+
+struct Point {
+    int x, y;
+}
+
+struct Color {
+    int r, g, b;
+}

@@ -1,0 +1,362 @@
+/// Contains main and input handling
+module qonquest2.app;
+
+macro import std.macro.cimport;
+macro import std.macro.listcomprehension;
+
+import std.algorithm;
+import std.stdio;
+import std.string;
+
+import c_header("SDL2/SDL.h");
+import c_header("SDL2/SDL_image.h");
+
+import qonquest2.base;
+import qonquest2.display;
+import qonquest2.map;
+import qonquest2.localization;
+import qonquest2.logic;
+import qonquest2.sdl;
+import qonquest2.util;
+import qonquest2.window;
+
+class GameImpl : Game {
+    SDL_Window* win;
+    nullable Window heldWindow;   /// Currently held window. null if no window is being held
+    Point heldWindowPos; /// Where the held window is being dragged from
+
+    // main menu windows
+    WindowImpl mainMenuWindow;
+    WindowImpl languagesWindow;
+
+    // game windows
+    WindowImpl viewWindow;
+    nullable WindowImpl actionsWindow;
+    WindowImpl howToPlayWindow;
+
+    Province selectedProvince; /// Interim value for moving troops
+    MapMode prevMapMode;       /// The previous map mode
+
+    Font font;
+    Localization localization;
+
+    int troopAmt;                  /// Troop amount for deployment and movement
+
+    this() { resetGlobals; }
+
+    /// Resets global variables
+    void resetGlobals() {
+        currentTurn = 0;
+        lastX = 100;
+        lastY = 100;
+    }
+
+    void playButton() {
+        changeState(State.GAME);
+        mapMode = MapMode.SELECT_COUNTRY;
+    }
+
+    void howToPlayButton() {
+        howToPlayWindow.visible = !howToPlayWindow.visible;
+    }
+
+    void sourceCodeButton() {
+        // import std.process : browse;
+        // browse(`https://www.github.com/TheZipCreator/qonquest2`);
+        die("TODO link to https://www.github.com/TheZipCreator/qonquest2");
+    }
+
+    void undoAction() {
+        auto player = player;
+        if(player.actions.length > 0) {
+            auto action = player.actions[$-1];
+            if(auto da = action.instanceOf(DeploymentAction))
+                player.country.deployableTroops += da.amt;
+            player.actions = player.actions[0..$-1];
+        }
+    }
+
+    void moveTroopsButton(int amt) {
+        prevMapMode = mapMode;
+        mapMode = MapMode.MOVE_TROOPS_1;
+        availableProvinces = map.provinces
+            .filter(p => p.owner == player.country && p.effectiveTroops(player) >= amt)
+            .array;
+        troopAmt = amt;
+    }
+
+    void deployTroopsButton(int amt) {
+        if(amt < 1)
+            return;
+        availableProvinces = player.country.ownedProvinces(map);
+        prevMapMode = mapMode;
+        mapMode = MapMode.DEPLOY_TROOPS;
+        troopAmt = amt;
+    }
+
+    /// Changes the current state
+    void changeState(State newState) {
+        windows = [];
+        state = newState;
+        if (state == State.MAIN_MENU) {
+            howToPlayWindow.visible = false;
+            mainMenuWindow = new WindowImpl(WIDTH/4, HEIGHT/4, 600, 400, "main-menu", font, localization);
+            mainMenuWindow
+                .addWidget(new Button(mainMenuWindow, 50, 50, 500, 24, "play", &playButton))
+                .addWidget(new Button(mainMenuWindow, 50, 50+(30*1), 500, 24, "how-to-play", &howToPlayButton))
+                .addWidget(new Button(mainMenuWindow, 50, 400-30, 500, 24, "source-code", &sourceCodeButton));
+            languagesWindow = new WindowImpl(30, HEIGHT/4, 200, 400, "languages", font, localization);
+            {
+                mut int i;
+                for (k in localization.languages.keys) {
+                    auto v = localization.languages[k];
+                    languagesWindow.addWidget(
+                        new Button(languagesWindow, 10, 50+(30*i++), 180, 24, v, useLocalization=false,
+                            new LoadLocalization(this, k)));
+                }
+            }
+            Window mainMenuWindow = mainMenuWindow, howToPlayWindow = howToPlayWindow, languagesWindow = languagesWindow;
+            windows = [mainMenuWindow, howToPlayWindow, languagesWindow];
+        } else if (state == State.GAME) {
+            actionsWindow = new WindowImpl(300, 50, 300, 500, "actions", font, localization);
+            actionsWindow
+                .addWidget(new Button(actionsWindow, 10, 500-30, 280, 24, "end-turn", &endTurn))
+                .addWidget(new Button(actionsWindow, 10, 500-30*2, 280, 24, "undo-action", &undoAction))
+                .addWidget(new CountButton(actionsWindow, 10, 500-30*3, 280, 24, "move-troops", 1, int.max,
+                    &moveTroopsButton))
+                .addWidget(new CountButton(actionsWindow, 10, 500-30*4, 280, 24, "deploy-troops", 0, int.max,
+                    &deployTroopsButton))
+                .addWidget(new ActionBox(actionsWindow));
+
+            viewWindow = new WindowImpl(50, 200, 150, 200, "view", font, localization);
+            viewWindow
+                .addWidget(new Checkbox(viewWindow, 10, 10, "actions", &actionsWindow.visible))
+                .addWidget(new Checkbox(viewWindow, 10, 10+(Checkbox.SIZE+10), "how-to-play", &howToPlayWindow.visible))
+                .addWidget(new Checkbox(viewWindow, 10, 200-(Checkbox.SIZE+10)*2, "hide-straits", &hideStraits))
+                .addWidget(new Checkbox(
+                    viewWindow, 10, 200-(Checkbox.SIZE+10), "provinces",
+                    new SetMapMode(this, MapMode.PROVINCE),
+                    new SetMapMode(this, MapMode.COUNTRY)));
+
+            Window viewWindow = viewWindow, actionsWindow = actionsWindow, howToPlayWindow = howToPlayWindow;
+            windows = [viewWindow, actionsWindow, howToPlayWindow];
+        }
+    }
+
+    /// Ends the turn and runs each action. If this is the last player, then it runs AI too
+    void endTurn() {
+        auto player = player;
+        this.commit(player.actions);
+        player.actions = [];
+        if(currentPlayer+1 == players.length) {
+            for (k in map.countries.keys) {
+                auto c = map.countries[k];
+                if(this.isPlayerCountry(c))
+                    continue;
+                c.deployableTroops = cast(int)c.ownedProvinces(map).length*2;
+                this.runAI(font, localization, map, c);
+            }
+            currentPlayer = 0;
+            currentTurn++;
+        } else
+            currentPlayer++;
+        if(player.country.ownedProvinces(map).length == 0)
+            mapMode = MapMode.LOST;
+        else if(player.country.ownedProvinces(map).length == map.provinces.length)
+            mapMode = MapMode.WON;
+        for (c in players.map(a => a.country))
+            c.deployableTroops = cast(int)c.ownedProvinces(map).length*2;
+    }
+}
+
+class SetMapMode : Action {
+    Game game;
+    MapMode mode;
+    this(this.game, this.mode) {}
+    override void call() { game.mapMode = mode; }
+}
+
+class LoadLocalization : Action {
+    GameImpl game;
+    string language;
+    this(this.game, this.language) {}
+    override void call() {
+        auto localization = game.localization;
+        localization.load(language);
+        game.howToPlayWindow.widgets[0].instanceOf(Text).text = localization.get("how-to-play-file");
+        import std.string : split;
+        game.howToPlayWindow.height = cast(int)(localization.get("how-to-play-file").split("\n").length)*CHAR_SIZE;
+    }
+}
+
+int main(string[] args) {
+    auto game = new GameImpl;
+    int SDL_WINDOWPOS_UNDEFINED = 536805376;
+
+    // Initialize SDL systems
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        print("SDL could not be initialized!");
+        return 1;
+    }
+    game.win = SDL_CreateWindow(
+        "Qonquest 2",
+        SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,
+        WIDTH, HEIGHT,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL);
+    if (!game.win) {
+        print("Window could not be created!");
+        return 1;
+    }
+    int imgFlags = IMG_INIT_PNG;
+    if (IMG_Init(imgFlags) & imgFlags == 0) {
+        die("SDL_image could not be initialized");
+    }
+    print("load localization");
+    game.localization = new Localization;
+    print("load font");
+    game.font = new Font;
+    game.font.load;
+    print("load map");
+    game.map = loadMap;
+    // init some windows
+    SDL_GL_CreateContext(game.win);
+    game.howToPlayWindow = new WindowImpl(500, 200, 560,
+        cast(int)(game.localization.get("how-to-play-file").split("\n").length*CHAR_SIZE), "how-to-play", game.font, game.localization);
+    game.howToPlayWindow
+        .addWidget(new Text(game.howToPlayWindow, 0, 0, game.localization.get("how-to-play-file")));
+    (new LoadLocalization(game, "eng-us")).call;
+    game.changeState(State.MAIN_MENU);
+    print("game running.");
+    while (true) {
+        mut SDL_Event currentEvent;
+        while (SDL_PollEvent(&currentEvent) != 0) {
+            if (currentEvent.type == SDL_QUIT) {
+                return 0;
+            }
+            if (currentEvent.type == SDL_MOUSEMOTION) {
+                auto event = cast(SDL_MouseMotionEvent*) &currentEvent;
+                game.mouseEvent(MouseEvent(MouseEventType.motion, MouseButton.none, event.x, event.y));
+            }
+            if (currentEvent.type == SDL_MOUSEBUTTONDOWN || currentEvent.type == SDL_MOUSEBUTTONUP) {
+                auto event = cast(SDL_MouseButtonEvent*) &currentEvent;
+                auto button = event.button.case(
+                    SDL_BUTTON_LEFT: MouseButton.left,
+                    SDL_BUTTON_RIGHT: MouseButton.right,
+                    SDL_BUTTON_MIDDLE: MouseButton.none,
+                    SDL_BUTTON_X1: MouseButton.none,
+                    SDL_BUTTON_X2: MouseButton.none);
+                if (currentEvent.type == SDL_MOUSEBUTTONDOWN) {
+                    game.mouseEvent(MouseEvent(MouseEventType.buttonPressed, button, event.x, event.y));
+                } else {
+                    game.mouseEvent(MouseEvent(MouseEventType.buttonReleased, button, event.x, event.y));
+                }
+            }
+            if (currentEvent.type == SDL_KEYDOWN) {
+                auto event = cast(SDL_KeyboardEvent*) &currentEvent;
+                if (game.state == State.GAME) {
+                    if (game.(MapMode.(
+                        mapMode == MOVE_TROOPS_1 || mapMode == MOVE_TROOPS_2 || mapMode == DEPLOY_TROOPS)))
+                    {
+                        if(event.keysym.scancode == /*SDL_SCANCODE_ESCAPE*/ 41) {
+                            game.mapMode = game.prevMapMode;
+                        }
+                        continue;
+                    }
+                    if (game.(MapMode.(mapMode == WON || mapMode == LOST))) {
+                        loadMap();
+                        game.resetGlobals();
+                        game.changeState(State.MAIN_MENU);
+                        continue;
+                    }
+                }
+            }
+        }
+        game.shiftPressed = SDL_GetModState & (KMOD_LSHIFT | KMOD_RSHIFT) != 0;
+        redraw(game);
+        SDL_GL_SwapWindow(game.win);
+    }
+}
+
+void redraw(GameImpl game) {
+    game.redrawOpenGlScene(game.font, game.localization);
+    if(game.players.length > 0 && game.actionsWindow !is null) {
+        auto button = game.actionsWindow.getWidget("deploy-troops").instanceOf(CountButton);
+        button.max = game.player.country.deployableTroops;
+    }
+}
+
+void mouseEvent(GameImpl game, MouseEvent e) with (game) with (MouseEventType) with (State) with (MapMode) {
+    if (e.type == buttonPressed) {
+        if(state != GAME || mapMode == PROVINCE || mapMode == COUNTRY)
+            for (i, w in windows) {
+                if(!w.visible)
+                    continue;
+                if(w.click(game, e.x-w.x, e.y-w.y, e.button))
+                    break;
+                if(w.inTitleBar(e.x, e.y)) {
+                    heldWindow = w;
+                    heldWindowPos = Point(e.x-w.x, e.y-w.y);
+                    windows = [w] ~ windows[0..i] ~ windows[i+1..$];
+                    break;
+                }
+            }
+        else if(state == GAME) {
+            mut nullable Province clickedProvince;
+            // outer:
+            for (p in map.provinces)
+                for (pix in p.pixels)
+                    if(pix.x == e.x && pix.y == e.y) {
+                        clickedProvince = p;
+                        // break outer;
+                    }
+            if (mapMode == SELECT_COUNTRY) {
+                if(clickedProvince !is null) {
+                    players = [new Player(clickedProvince.owner)];
+                    mapMode = COUNTRY;
+                    for (p in map.provinces)
+                        if(!game.isPlayerCountry(p.owner))
+                            p.troops = 2;
+                        else
+                            p.troops = 0;
+                }
+            } else if (mapMode == MOVE_TROOPS_1) {
+                if ([any a is clickedProvince for a in availableProvinces]) {
+                    selectedProvince = clickedProvince.case(null: die("internal error"));
+                    mapMode = MOVE_TROOPS_2;
+                    availableProvinces = [p for p in map.provinces
+                        where p && [any a is p for a in selectedProvince.neighbors]];
+                }
+            } else if (mapMode == MOVE_TROOPS_2) {
+                if ([any a is clickedProvince for a in availableProvinces]) {
+                    mapMode = prevMapMode;
+                    auto player = player;
+                    player.actions ~= new MovementActionImpl(
+                        selectedProvince, clickedProvince.case(null: die("internal error")), troopAmt,
+                        font, localization);
+                }
+            } else if (mapMode == DEPLOY_TROOPS) {
+                if ([any a is clickedProvince for a in availableProvinces]) {
+                    mapMode = prevMapMode;
+                    auto player = player;
+                    player.actions ~= new DeploymentActionImpl(clickedProvince.case(null: die("internal error")), troopAmt);
+                    player.country.deployableTroops -= troopAmt;
+                }
+            }
+        }
+        return;
+    }
+    if (e.type == buttonReleased) {
+        if (e.button == MouseButton.left) {
+            if(heldWindow !is null)
+                heldWindow = null;
+        }
+        return;
+    }
+    if (e.type == motion) {
+        if(auto heldWindow = heldWindow) {
+            heldWindow.x = e.x-heldWindowPos.x;
+            heldWindow.y =  e.y-heldWindowPos.y;
+        }
+    }
+}

@@ -1,0 +1,189 @@
+/// Contains game logic
+module qonquest2.logic;
+
+macro import std.macro.listcomprehension;
+
+import qonquest2.base;
+import qonquest2.localization;
+import qonquest2.map;
+import qonquest2.sdl : CHAR_SIZE, Font;
+import qonquest2.window;
+import std.algorithm;
+import std.string;
+
+/// Moves troops from one province to another
+class MovementActionImpl : MovementAction {
+    Font font;
+    Localization localization;
+
+    this(this.source, this.dest, this.amt, this.font, this.localization) { }
+
+    override void commit(Game game) {
+        if(source.owner is dest.owner) {
+            // just a movement between provinces
+            source.troops -= amt;
+            dest.troops   += amt;
+            return;
+        }
+        auto attacker = source.owner;
+        auto defender = dest.owner;
+        // battle!
+        mut string battleLog; // log to show if the player owns one of the provinces
+        battleLog ~= "`o"~attacker.hexCode~localization.get(attacker.name)
+            ~"`o`FFFFFF"~localization.get("vs")~"`o"~defender.hexCode~localization.get(defender.name)~"`o`FFFFFF\n";
+        int uniform(int from, int to) {
+            return from + (rand % (to - from));
+        }
+        int roll(Country c) {
+            if(auto p = game.getPlayer(c))
+                if(!p.hasCapturedProvince)
+                    return uniform(2, 6)+1;
+            return uniform(0, 6)+1;
+        }
+        mut int round = 1;
+        mut int totalAttackerLost = 0;
+        void won(Country c) {
+            if(auto p = game.getPlayer(c))
+                p.hasCapturedProvince = true;
+            battleLog ~= localization.get("battle-result").replace("%s", "`o"~c.hexCode~localization.get(c.name)~"`o`FFFFFF")~"\n";
+            dest.owner = c;
+            if(!game.isPlayerCountry(attacker) && !game.isPlayerCountry(defender))
+                return;
+            int height = 40+cast(int)(battleLog.split("\n").length)*CHAR_SIZE;
+            auto win = new WindowImpl(
+                game=game,
+                width=500, height=height,
+                title=localization.get("battle-of")~" `o"~dest.hexCode~localization.get(dest.name),
+                font=font, localization=localization);
+            win
+                .addWidget(new Text(win, 0, 34, battleLog))
+                .addWidget(new Button(win, 10, 10, 480, 24, "close", &win.closeButton));
+            Window win = win;
+            game.windows = [win] ~ game.windows;
+        }
+        if(dest.troops == 0) {
+            won(attacker);
+            source.troops -= amt;
+            dest.troops = amt;
+            return;
+        }
+        while(true) {
+            battleLog ~= "`FFFFFF"~localization.get("round")~" $round\n";
+            battleLog ~= "`o"~attacker.hexCode~(amt-totalAttackerLost).("$that")~"`o`FFFFFF / `o$(dest.hexCode)$(dest.troops)`o`FFFFFF\n";
+            int[] attackerRolls = [roll(attacker), roll(attacker)].sort((a, b) => a > b);
+            int[] defenderRolls = [roll(defender), roll(defender), roll(defender)].sort((a, b) => a > b);
+            mut int attackerLost;
+            mut int defenderLost;
+            for (i in 0 .. 2) {
+                if(attackerRolls[i] > defenderRolls[i])
+                    defenderLost++;
+                else
+                    attackerLost++;
+            }
+            battleLog ~= attackerRolls.(localization.get("attacker-rolls")~": $(that[0]), $(that[1])\n");
+            battleLog ~= defenderRolls.(localization.get("defender-rolls")~": $(that[0]), $(that[1]), $(that[2])\n");
+            battleLog ~= localization.get("losses")
+                .replaceOnce("%s", "$attackerLost")
+                .replaceOnce("%s", "$defenderLost") ~ "\n";
+            totalAttackerLost += attackerLost;
+            dest.troops -= defenderLost;
+            round++;
+            if(totalAttackerLost >= amt) {
+                won(defender);
+                source.troops -= amt;
+                break;
+            }
+            else if(dest.troops <= 0) {
+                won(attacker);
+                dest.troops = amt-totalAttackerLost;
+                source.troops -= amt;
+                break;
+            }
+        }
+    }
+}
+
+string replaceOnce(string text, string match, string repl) {
+    int pos = text.find(match);
+    if (pos == -1) return text;
+    return text[0 .. pos] ~ repl ~ text[pos + match.length .. $];
+}
+
+/// Deploys troops to a province
+class DeploymentActionImpl : DeploymentAction {
+    this(this.province, this.amt) { }
+
+    override void commit(Game game) {
+        province.troops += amt;
+    }
+}
+
+/// Returns the player associated with a given country (null if none)
+nullable Player getPlayer(Game game, Country c) {
+    for (p in game.players)
+        if(p.country is c)
+            return p;
+    return null;
+}
+
+/// Tests if a country is the player country
+bool isPlayerCountry(Game game, Country c) {
+    return game.getPlayer(c) !is null;
+}
+
+/// Commits all actions in an array
+void commit(Game game, PlayerAction[] actions) {
+    for (a in actions)
+        a.commit(game);
+}
+
+alias Frontier = (Province src, Province dest);
+
+/// Gets the frontiers of a country (e.g. provinces that neighbor provinces not owned by the country)
+Frontier[] frontiers(GameMap map, Country c) {
+    mut Frontier[] frontiers;
+    for (src in c.ownedProvinces(map))
+        for (dest in src.neighbors)
+            if(src.owner !is dest.owner)
+                frontiers ~= (src, dest);
+    return frontiers;
+}
+
+/// Runs the AI for a country
+void runAI(Game game, Font font, Localization localization, GameMap map, Country c) {
+    mut PlayerAction[] actions;
+    auto frontiers = map.frontiers(c).randomShuffle;
+    // deployment
+    while(c.deployableTroops > 0) {
+        actions ~= new DeploymentActionImpl(frontiers.choice.src, 1);
+        c.deployableTroops--;
+    }
+    // movement
+    mut Province[] hasMovedFrom;
+    for (f in frontiers) {
+        if([any a == f.src for a in hasMovedFrom])
+            continue;
+        if(f.dest.troops > f.src.troops)
+            continue;
+        actions ~= new MovementActionImpl(f.src, f.dest, f.src.troops, font, localization);
+        hasMovedFrom ~= f.src;
+    }
+    game.commit(actions);
+}
+
+extern(C) int rand();
+
+T choice(T)(T[] array) {
+    return array[rand % $];
+}
+
+T[] randomShuffle(T)(T[] array) {
+    mut auto result = array.dup;
+    for (i in 0 .. cast(int) result.length) {
+        int target = i + (rand() % (cast(int) result.length - i));
+        auto swap = result[i];
+        result[i] = result[target];
+        result[target] = swap;
+    }
+    return result;
+}

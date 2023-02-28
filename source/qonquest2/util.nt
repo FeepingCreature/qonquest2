@@ -1,0 +1,9 @@
+module qonquest2.util;
+
+import std.stdio : print;
+extern(C) void exit(int);
+
+bottom die(string msg) {
+    print(msg);
+    exit(1);
+}

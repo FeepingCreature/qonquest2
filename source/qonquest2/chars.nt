@@ -1,0 +1,68 @@
+module qonquest2.chars;
+
+/// A single character in the font
+struct Char {
+    bool[] pixels; /// Pixels of this character
+    int fontSpacing; /// Width of this character (used in `text()`)
+    /// Renders this character at the given position (must be called within redrawOpenGlScene)
+    void render(float x, float y, float scale = 1, Color3f col = Color3f(1, 1, 1), bool drawOutline = false) {
+        glBegin(GL_QUADS);
+        if(drawOutline) {
+            glColor3f(0, 0, 0);
+            for(int i = 0; i < CHAR_SIZE; i++) {
+                for(int j = 0; j < CHAR_SIZE; j++) {
+                    if(!pixels[i][j])
+                        continue;
+                    enum OUTLINE_SIZE = 1;
+                    glVertex2f(x+i*scale-OUTLINE_SIZE,       y+j*scale-OUTLINE_SIZE      );
+                    glVertex2f(x+i*scale+scale+OUTLINE_SIZE, y+j*scale                   );
+                    glVertex2f(x+i*scale+scale+OUTLINE_SIZE, y+j*scale+scale+OUTLINE_SIZE);
+                    glVertex2f(x+i*scale-OUTLINE_SIZE,       y+j*scale+scale+OUTLINE_SIZE);
+                }
+            }
+        }
+        col.draw;
+        for(int i = 0; i < CHAR_SIZE; i++) {
+            for(int j = 0; j < CHAR_SIZE; j++) {
+                if(!pixels[i][j])
+                    continue;
+                glVertex2f(x+i*scale,       y+j*scale      );
+                glVertex2f(x+i*scale+scale, y+j*scale      );
+                glVertex2f(x+i*scale+scale, y+j*scale+scale);
+                glVertex2f(x+i*scale,       y+j*scale+scale);
+            }
+        }
+        glEnd();
+    }
+}
+
+class CharMap {
+
+    Char[] characters; /// Characters in the font
+
+    void load() {
+        // load font
+        auto fontImage = readPng("data/font.png");
+        import std.algorithm;
+        import std.array;
+        import std.string;
+        import std.conv;
+        int[] fontSpacing = readText("data/font-spacing.txt")[0..$-1].splitLines.map(x => x.to!int).array;
+        for(int i = 0; i < fontImage.width/CHAR_SIZE; i++) {
+            for(int j = 0; j < fontImage.height/CHAR_SIZE; j++) {
+                int x = j*CHAR_SIZE;
+                int y = i*CHAR_SIZE;
+                Char c;
+                // there's probably a better way to do this than four nested for loops
+                for(int k = 0; k < CHAR_SIZE; k++) {
+                    for(int l = 0; l < CHAR_SIZE; l++) {
+                        c.pixels[k][l] = fontImage.getPixel(x+k, y+l).r == 0;
+                    }
+                }
+                if(characters.length < fontSpacing.length)
+                    c.fontSpacing = fontSpacing[characters.length];
+                characters ~= c;
+            }
+        }
+    }
+}

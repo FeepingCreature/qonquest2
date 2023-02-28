@@ -1,0 +1,14 @@
+{
+    "source": "source",
+    "type": "binary",
+    "binary": "qonquest2",
+    "main": "source/qonquest2/app.nt",
+    "description": "A strategy game, sequel to Qonquest",
+    "authors": ["TheZipCreator"],
+    "copyright": "Copyright © 2023, TheZipCreator",
+    "license": "GNU General Public License v3.0",
+    "dependencies": {
+    },
+    "sources": {
+    }
+}

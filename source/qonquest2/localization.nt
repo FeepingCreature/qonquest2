@@ -1,0 +1,47 @@
+/// Contains code handling localization
+module qonquest2.localization;
+
+import std.file;
+import std.json;
+import qonquest2.util;
+
+class Localization {
+    string[string] keys; /// All localizations
+    string[string] languages;  /// List of languages (ISO 639-3 code -> Language name)
+
+    this() {
+        auto json = JSONValue.loadFile("data/localization/language-names.json");
+        for (k in json.keys) {
+            auto v = json.get(k);
+            languages[k] = v.str;
+        }
+    }
+
+    string get(string key) {
+        return this.keys.get(key, key);
+    }
+
+    void load(string language) {
+        keys.clear;
+        string path = "data/localization/"~language~".json";
+        if(!path.exists)
+            return; // TODO: report error
+        auto json = JSONValue.loadFile(path);
+        for (k in json.keys) {
+            auto v = json.get(k);
+            v.value.case {
+                string str:
+                    keys[k] = str;
+                (string key, JSONValue value)[] object:
+                    auto type = v.get("type").str;
+                    if (type == "file") {
+                        keys[k] = readText(v.get("location").str);
+                    } else {
+                        die("unknown type $(type)");
+                    }
+                default:
+                    die("invalid value type");
+            }
+        }
+    }
+}

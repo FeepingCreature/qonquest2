@@ -1,0 +1,324 @@
+/// Contains code handling windows and widgets
+module qonquest2.window;
+
+macro import std.macro.cimport;
+macro import std.macro.the;
+
+import qonquest2.base;
+import qonquest2.localization;
+import qonquest2.sdl;
+
+import c_header("GL/gl.h");
+
+abstract class Widget {
+    Window parent; /// What window this widget is in
+    int x;         /// Position X of this widget
+    int y;         /// Position Y of this widget
+    string id;     /// ID of this widget
+
+    void draw(Font, Localization, nullable Player, bool active) {} /// What to do when drawn
+    bool click(Game, int x, int y, MouseButton b) {return false;} /// Called when clicked. Position is relative to the widget position. Returns whether or not this widget should be active
+    void type(char ch) {}                   /// What to do when a character is typed and this widget is active
+    /// Equivalent to `x+parent.x`
+    int absX() { return x+parent.x; }
+    /// Equivalent to `y+parent.y`
+    int absY() { return y+parent.y; }
+}
+
+/// A simple checkbox
+class Checkbox : Widget {
+    alias SIZE        = 16;
+    alias COLOR       = (Color3f(0.75f, 0.75f, 0.75f));
+    alias CHECK_COLOR = (Color3f(1, 0, 0));
+
+    string label;               /// Label to appear alongside this checkbox
+    bool on;                    /// Whether this checkbox is on or off
+    nullable Action onEnable;   /// What to do when this checkbox is enabled
+    nullable Action onDisable;  /// What to do when this checkbox is disabled
+    bool* ptr;
+    bool invert;
+
+    /// Default constructor. Initializes the ID to the label
+    this(this.parent, this.x, this.y, this.id,
+        (nullable Action | void delegate()) onEnable = null,
+        (nullable Action | void delegate()) onDisable = null)
+    {
+        this.onEnable = onEnable.case(void delegate() dg: new DelegateAction(dg));
+        this.onDisable = onDisable.case(void delegate() dg: new DelegateAction(dg));
+        this.label = this.id;
+    }
+
+    /// Construct with a bool pointer. A `onEnable` and `onDisable` is constructed to automatically align the value at the pointer with the
+    /// value of `on`. `invert` may be specified to set the value at the pointer to the opposite of `on`.
+    this(this.parent, this.x, this.y, this.id, this.ptr, this.invert = false) {
+        this.label = this.id;
+        this.onEnable = new DelegateAction(&onEnableDefault);
+        this.onDisable = new DelegateAction(&onDisableDefault);
+        *ptr = invert;
+    }
+
+    void onEnableDefault() {
+        *ptr = !invert;
+    }
+    void onDisableDefault() {
+        *ptr = invert;
+    }
+
+    override void draw(Font, Localization, nullable Player, bool active) {
+        COLOR.draw;
+        rect(this.absX, this.absY, SIZE, SIZE);
+        if(this.on) {
+            CHECK_COLOR.draw;
+            rect(this.absX+SIZE/4, this.absY+SIZE/4, SIZE/2, SIZE/2);
+        }
+        text(the Font, (the Localization).get(this.label), this.absX+SIZE, this.absY, 1, Color3f(1, 1, 1));
+    }
+    override bool click(Game, int x, int y, MouseButton b) {
+        if(b != MouseButton.left || x < 0 || x > SIZE || y < 0 || y > SIZE)
+            return false;
+        on = !on;
+        if(on && onEnable) {
+            onEnable.call;
+        }
+        if (!on && onDisable) {
+            onDisable.call;
+        }
+        return false;
+    }
+}
+
+/// A simple button
+final class Button : Widget {
+    string label;
+    Action onClick;
+    int width;
+    int height;
+    bool useLocalization;
+
+    alias COLOR = (Color3f(0.75f, 0.75f, 0.75f));
+
+    this(this.parent, this.x, this.y, this.width, this.height, this.id, (void delegate() | Action) onClick) {
+        this.onClick = onClick.case(void delegate() dg: new DelegateAction(dg));
+        this.label = this.id;
+        this.useLocalization = true;
+    }
+
+    this(this.parent, this.x, this.y, this.width, this.height, this.id, this.useLocalization,
+        (void delegate() | Action) onClick)
+    {
+        this.onClick = onClick.case(void delegate() dg: new DelegateAction(dg));
+        this.label = this.id;
+    }
+
+    override void draw(Font, Localization, nullable Player, bool active) {
+        auto parent = parent;
+        COLOR.draw;
+        rect(absX, absY, width, height);
+        textCenter(the Font, (the Localization).get(label) if useLocalization else label, absX+(width/2), absY);
+    }
+
+    override bool click(Game, int x, int y, MouseButton b) {
+        if(b != MouseButton.left || x < 0 || y < 0 || x > width || y > height)
+            return false;
+        onClick.call();
+        return true;
+    }
+}
+
+/// A button with a counter
+class CountButton : Widget {
+    string label;
+    void delegate(int) onClick;
+    int width;
+    int height;
+    int count;
+    int min;
+    int max;
+
+    alias COLOR = (Color3f(0.75f, 0.75f, 0.75f));
+    alias COUNT_COLOR = (Color3f(0.25f, 0.25f, 0.25f));
+    alias COUNT_SIZE = 0.25f;
+
+    this(this.parent, this.x, this.y, this.width, this.height, this.id, this.min, this.max, this.onClick) {
+        this.label = this.id;
+    }
+
+    override void draw(Font, Localization, nullable Player, bool active) {
+        COLOR.draw;
+        rect(absX+COUNT_SIZE*width, absY, width-COUNT_SIZE*width, height);
+        textCenter(the Font, (the Localization).get(label), absX+(COUNT_SIZE*width)/2+width/2, absY);
+        COUNT_COLOR.draw;
+        rect(absX, absY, width*COUNT_SIZE, height);
+        textCenter(the Font, "$count"~("" if max == int.max else "/$max"),
+            absX+(width*COUNT_SIZE)/2, absY, 1, Color3f(1, 1, 1));
+        checkBounds();
+    }
+
+    void checkBounds() {
+        if(count < min)
+            count = min;
+        else if(count > max)
+            count = max;
+    }
+
+    override bool click(Game game, int x, int y, MouseButton b) {
+        int amt() {
+            return 5 if game.shiftPressed else 1;
+        }
+        if(b == MouseButton.left) {
+            if(x < 0 || y < 0 || x > width || y > height)
+                return false;
+            if(x < width*COUNT_SIZE) {
+                count += amt();
+                checkBounds;
+                return true;
+            }
+            onClick(count);
+            return true;
+        } else if(b == MouseButton.right) {
+            if(x < 0 ||  y < 0 || x > width*COUNT_SIZE || y > height)
+                return false;
+            count -= amt();
+            checkBounds;
+            return true;
+        }
+        return false;
+    }
+}
+
+/// A widget displaying all actions.
+class ActionBox : Widget {
+
+    this(this.parent) {
+        this.x = 0;
+        this.y = 0;
+        this.id = "action-box";
+    }
+
+    alias X_SIZE    = 14;
+    alias SPACING   = 4;
+
+    override void draw(Font font, Localization localization, nullable Player, bool active) {
+        auto actions = (the nullable Player).actions;
+        for (int i, a in actions) {
+            mut string t = "unknown action";
+            if(auto ma = a.instanceOf(MovementAction))
+                // Move: n, A -> B
+                t = localization.get("move")~": $(ma.amt), `"
+                    ~ Color3f(ma.source.color).toHexString ~ localization.get(ma.source.name)
+                    ~ "`FFFFFF -> `"~Color3f(ma.dest.color).toHexString~localization.get(ma.dest.name);
+            else if(auto da = a.instanceOf(DeploymentAction))
+                // Deploy: n, A
+                t = localization.get("deploy")~": $(da.amt), `"
+                    ~ Color3f(da.province.color).toHexString ~ localization.get(da.province.name);
+            text(font, t, parent.x+SPACING, parent.y+SPACING+i*CHAR_SIZE, 1, Color3f(1, 1, 1));
+        }
+    }
+
+    override bool click(Game, int x, int y, MouseButton b) {
+        if(b != MouseButton.left || x < parent.width-X_SIZE-SPACING || x > parent.width-SPACING || y < SPACING)
+            return false;
+
+        return false;
+    }
+}
+
+/// Static text
+class Text : Widget {
+    string text;
+
+    this(this.parent, this.x, this.y, this.id) {
+        this.text = this.id;
+    }
+
+    override void draw(Font, Localization, nullable Player, bool active) {
+        .text(the Font, this.text, absX, absY, 1, Color3f(1, 1, 1));
+    }
+}
+
+/// The main window class
+class WindowImpl : Window {
+    Widget[] widgets;    /// Widgets in this window
+    string title;        /// Title of this window
+    Font font;
+    Localization localization;
+    nullable Widget activeWidget; /// Currently active widget
+
+    alias TEXT_COLOR  = (Color3f(1,   1,   1));   /// Color of window text
+    alias TITLE_COLOR = (Color3f(0.25f, 0.25f, 0.25f)); /// Color of window title bar
+    alias BODY_COLOR  = (Color3f(0.5f,  0.5f,  0.5f));  /// Color of the body of windows
+
+    alias TITLE_HEIGHT = 24; /// Height of the window title bar
+
+    this(this.x, this.y, this.width, this.height, this.title, this.font, this.localization) {
+        this.visible = true;
+        this.close = false;
+    }
+
+    this(Game game, this.width, this.height, this.title, this.font, this.localization) {
+        this.x = game.lastX;
+        this.y = game.lastY;
+        this.visible = true;
+        this.close = false;
+        game.lastX += width/2;
+        game.lastY += height/2;
+        if (game.lastX+width > WIDTH)
+            game.lastX = 100;
+        if (game.lastY+height > HEIGHT)
+            game.lastY = 100;
+    }
+
+    /// Called when this window is clicked. X and Y should be relative to the window's position
+    override bool click(Game, int cx, int cy, MouseButton button) {
+        import std.stdio;
+        if(cx < 0 || cx > width || cy < 0 || cy > height)
+            return false;
+        for (w in widgets)
+            w.click(the Game, cx-w.x, cy-w.y, button);
+                // activeWidget = w;
+        return true;
+    }
+
+    /// Called when a character is pressed and this is the active window
+    void type(char ch) {
+        if(activeWidget !is null)
+            activeWidget.type(ch);
+    }
+
+    void closeButton() {
+        this.close = true;
+    }
+
+    /// Adds a widget to the window. Returns the window.
+    WindowImpl addWidget(Widget w) {
+        widgets ~= w;
+        return this;
+    }
+
+    override void render(nullable Player player) {
+        if(!visible)
+            return;
+        TITLE_COLOR.draw;
+        rect(x, y-TITLE_HEIGHT, width, TITLE_HEIGHT);
+        BODY_COLOR.draw;
+        rect(x, y, width, height);
+        glColor3f(0, 0, 0);
+        rect(x, y-TITLE_HEIGHT, width, height+TITLE_HEIGHT, GL_LINE_LOOP);
+        text(font, localization.get(title), x+8, y-TITLE_HEIGHT+4, 1, TEXT_COLOR);
+        for (wi in widgets)
+            wi.draw(this.font, this.localization, player, wi is activeWidget);
+    }
+
+    /// Whether a given point is inside this window's title bar
+    override bool inTitleBar(int a, int b) {
+        return a >= x && a <= x+width && b >= y-TITLE_HEIGHT && b <= y;
+    }
+
+    /// Get a widget via its id
+    nullable Widget getWidget(string id) {
+        for (w in widgets)
+            if(w.id == id)
+                return w;
+        return null;
+    }
+}
