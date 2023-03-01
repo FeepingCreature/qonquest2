@@ -68,39 +68,44 @@ struct Char {
 
 class Font {
 
-    Char[] characters; /// Characters in the font
+    int[] fontSpacing;
+
+    SDL_Surface* fontImage;
+
+    private Char[int] characters;
 
     this() { }
 
     void load() {
         // load font
 
-        SDL_Surface* fontImage = IMG_Load("data/font.png");
+        this.fontImage = IMG_Load("data/font.png");
         if (!fontImage) {
             die("couldn't load data/font.png: $(SDL_GetError.cToString)");
         }
         import std.algorithm;
         import std.file;
         import std.string;
-        int[] fontSpacing = readText("data/font-spacing.txt")[0..$-1].split("\n").map(x => atoi(x)).array;
-        for (i in 0 .. fontImage.w/CHAR_SIZE) {
-            for (j in 0 .. fontImage.h/CHAR_SIZE) {
-                int x = j*CHAR_SIZE;
-                int y = i*CHAR_SIZE;
-                mut Char c;
-                int bpp = fontImage.format.BytesPerPixel;
-                // there's probably a better way to do this than four nested for loops
-                for (k in 0 .. CHAR_SIZE) {
-                    for (l in 0 .. CHAR_SIZE) {
-                        auto pixel = &(cast(ubyte*) fontImage.pixels)[(y + l) * fontImage.pitch + (x + k) * bpp];
-                        c.pixels ~= pixel[0] == 0;
-                    }
+        this.fontSpacing = readText("data/font-spacing.txt")[0..$-1].split("\n").map(x => atoi(x)).array;
+    }
+    Char getChar(int index) {
+        if (!characters.has(index)) {
+            int width = fontImage.w / CHAR_SIZE;
+            int i = index % width, j = index / width;
+            int x = i * CHAR_SIZE, y = j * CHAR_SIZE;
+            mut Char c;
+            int bpp = fontImage.format.BytesPerPixel;
+            for (k in 0 .. CHAR_SIZE) {
+                for (l in 0 .. CHAR_SIZE) {
+                    auto pixel = &(cast(ubyte*) fontImage.pixels)[(y + l) * fontImage.pitch + (x + k) * bpp];
+                    c.pixels ~= pixel[0] == 0;
                 }
-                if(characters.length < fontSpacing.length)
-                    c.fontSpacing = fontSpacing[characters.length];
-                characters ~= c;
             }
+            if (index < fontSpacing.length)
+                c.fontSpacing = fontSpacing[index];
+            characters[index] = c;
         }
+        return characters[index];
     }
 }
 
@@ -207,7 +212,7 @@ struct ByUnicode {
 float textLen(Font font, string s, float scale = 1) {
     mut float len = 0;
     for (c in ByUnicode(s))
-        len += font.characters[c].fontSpacing*scale;
+        len += font.getChar(c).fontSpacing*scale;
     return len;
 }
 
@@ -243,7 +248,7 @@ void text(Font font, string s, mut float x, mut float y, float scale = 1, mut Co
             col = Color3f(colorCode);
             continue;
         }
-        auto ch = font.characters[c];
+        auto ch = font.getChar(c);
         ch.render(x, y, scale, col, drawOutline != doOutline);
         x += scale*ch.fontSpacing;
     }

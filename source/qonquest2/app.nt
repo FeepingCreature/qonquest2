@@ -61,9 +61,7 @@ class GameImpl : Game {
     }
 
     void sourceCodeButton() {
-        // import std.process : browse;
-        // browse(`https://www.github.com/TheZipCreator/qonquest2`);
-        die("TODO link to https://www.github.com/TheZipCreator/qonquest2");
+        system("xdg-open https://www.github.com/TheZipCreator/qonquest2");
     }
 
     void undoAction() {
