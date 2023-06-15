@@ -51,19 +51,6 @@ class GameImpl : Game {
         lastY = 100;
     }
 
-    void playButton() {
-        changeState(State.GAME);
-        mapMode = MapMode.SELECT_COUNTRY;
-    }
-
-    void howToPlayButton() {
-        howToPlayWindow.visible = !howToPlayWindow.visible;
-    }
-
-    void sourceCodeButton() {
-        system("xdg-open https://www.github.com/TheZipCreator/qonquest2");
-    }
-
     void undoAction() {
         auto player = player;
         if(player.actions.length > 0) {
@@ -74,24 +61,6 @@ class GameImpl : Game {
         }
     }
 
-    void moveTroopsButton(int amt) {
-        prevMapMode = mapMode;
-        mapMode = MapMode.MOVE_TROOPS_1;
-        availableProvinces = map.provinces
-            .filter(p => p.owner == player.country && p.effectiveTroops(player) >= amt)
-            .array;
-        troopAmt = amt;
-    }
-
-    void deployTroopsButton(int amt) {
-        if(amt < 1)
-            return;
-        availableProvinces = player.country.ownedProvinces(map);
-        prevMapMode = mapMode;
-        mapMode = MapMode.DEPLOY_TROOPS;
-        troopAmt = amt;
-    }
-
     /// Changes the current state
     void changeState(State newState) {
         windows = [];
@@ -100,9 +69,16 @@ class GameImpl : Game {
             howToPlayWindow.visible = false;
             mainMenuWindow = new WindowImpl(WIDTH/4, HEIGHT/4, 600, 400, "main-menu", font, localization);
             mainMenuWindow
-                .addWidget(new Button(mainMenuWindow, 50, 50, 500, 24, "play", &playButton))
-                .addWidget(new Button(mainMenuWindow, 50, 50+(30*1), 500, 24, "how-to-play", &howToPlayButton))
-                .addWidget(new Button(mainMenuWindow, 50, 400-30, 500, 24, "source-code", &sourceCodeButton));
+                .addWidget(new Button(mainMenuWindow, 50, 50, 500, 24, "play", new () {
+                    changeState(State.GAME);
+                    mapMode = MapMode.SELECT_COUNTRY;
+                }))
+                .addWidget(new Button(mainMenuWindow, 50, 50+(30*1), 500, 24, "how-to-play", new () {
+                    howToPlayWindow.visible = !howToPlayWindow.visible;
+                }))
+                .addWidget(new Button(mainMenuWindow, 50, 400-30, 500, 24, "source-code", new () {
+                    system("xdg-open https://www.github.com/TheZipCreator/qonquest2");
+                }));
             languagesWindow = new WindowImpl(30, HEIGHT/4, 200, 400, "languages", font, localization);
             {
                 mut int i;
@@ -121,9 +97,25 @@ class GameImpl : Game {
                 .addWidget(new Button(actionsWindow, 10, 500-30, 280, 24, "end-turn", &endTurn))
                 .addWidget(new Button(actionsWindow, 10, 500-30*2, 280, 24, "undo-action", &undoAction))
                 .addWidget(new CountButton(actionsWindow, 10, 500-30*3, 280, 24, "move-troops", 1, int.max,
-                    &moveTroopsButton))
+                    new (amt) {
+                        prevMapMode = mapMode;
+                        mapMode = MapMode.MOVE_TROOPS_1;
+                        availableProvinces = map.provinces
+                            .filter(p => p.owner == player.country && p.effectiveTroops(player) >= amt)
+                            .array;
+                        troopAmt = amt;
+                    }
+                ))
                 .addWidget(new CountButton(actionsWindow, 10, 500-30*4, 280, 24, "deploy-troops", 0, int.max,
-                    &deployTroopsButton))
+                    new (amt) {
+                        if(amt < 1)
+                            return;
+                        availableProvinces = player.country.ownedProvinces(map);
+                        prevMapMode = mapMode;
+                        mapMode = MapMode.DEPLOY_TROOPS;
+                        troopAmt = amt;
+                    }
+                ))
                 .addWidget(new ActionBox(actionsWindow));
 
             viewWindow = new WindowImpl(50, 200, 150, 200, "view", font, localization);
