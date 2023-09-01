@@ -185,5 +185,5 @@ T[] randomShuffle(T)(T[] array) {
         result[i] = result[target];
         result[target] = swap;
     }
-    return result;
+    return result.freeze;
 }
